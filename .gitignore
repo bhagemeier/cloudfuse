@@ -10,3 +10,11 @@ cloudfuse
 # Ignore Eclipse files
 .cproject
 .project
+/.settings/
+
+# Ignore autotools files
+/autom4te.cache/
+/aclocal.m4
+
+# Ignore backup files
+*~
