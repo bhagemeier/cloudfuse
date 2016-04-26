@@ -630,6 +630,8 @@ ALLOCA
 EGREP
 GREP
 CPP
+MEMCACHED_LIBS
+MEMCACHED_CFLAGS
 OPENSSL_LIBS
 OPENSSL_CFLAGS
 FUSE_LIBS
@@ -717,6 +719,8 @@ FUSE_CFLAGS
 FUSE_LIBS
 OPENSSL_CFLAGS
 OPENSSL_LIBS
+MEMCACHED_CFLAGS
+MEMCACHED_LIBS
 CPP'
 
 
@@ -1349,6 +1353,10 @@ Some influential environment variables:
               C compiler flags for OPENSSL, overriding pkg-config
   OPENSSL_LIBS
               linker flags for OPENSSL, overriding pkg-config
+  MEMCACHED_CFLAGS
+              C compiler flags for MEMCACHED, overriding pkg-config
+  MEMCACHED_LIBS
+              linker flags for MEMCACHED, overriding pkg-config
   CPP         C preprocessor
 
 Use these variables to override the choices made by `configure' or to help
@@ -3712,6 +3720,97 @@ $as_echo "yes" >&6; }
 
 fi
 
+pkg_failed=no
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for MEMCACHED" >&5
+$as_echo_n "checking for MEMCACHED... " >&6; }
+
+if test -n "$MEMCACHED_CFLAGS"; then
+    pkg_cv_MEMCACHED_CFLAGS="$MEMCACHED_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libmemcached >= 0.8.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libmemcached >= 0.8.0") 2>&5
+  ac_status=$?
+  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_MEMCACHED_CFLAGS=`$PKG_CONFIG --cflags "libmemcached >= 0.8.0" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$MEMCACHED_LIBS"; then
+    pkg_cv_MEMCACHED_LIBS="$MEMCACHED_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libmemcached >= 0.8.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libmemcached >= 0.8.0") 2>&5
+  ac_status=$?
+  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_MEMCACHED_LIBS=`$PKG_CONFIG --libs "libmemcached >= 0.8.0" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+   	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+	        MEMCACHED_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libmemcached >= 0.8.0" 2>&1`
+        else
+	        MEMCACHED_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libmemcached >= 0.8.0" 2>&1`
+        fi
+	# Put the nasty error message in config.log where it belongs
+	echo "$MEMCACHED_PKG_ERRORS" >&5
+
+	as_fn_error $? "Package requirements (libmemcached >= 0.8.0) were not met:
+
+$MEMCACHED_PKG_ERRORS
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables MEMCACHED_CFLAGS
+and MEMCACHED_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details." "$LINENO" 5
+elif test $pkg_failed = untried; then
+     	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+	{ { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
+as_fn_error $? "The pkg-config script could not be found or is too old.  Make sure it
+is in your PATH or set the PKG_CONFIG environment variable to the full
+path to pkg-config.
+
+Alternatively, you may set the environment variables MEMCACHED_CFLAGS
+and MEMCACHED_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+To get pkg-config, see <http://pkg-config.freedesktop.org/>.
+See \`config.log' for more details" "$LINENO" 5; }
+else
+	MEMCACHED_CFLAGS=$pkg_cv_MEMCACHED_CFLAGS
+	MEMCACHED_LIBS=$pkg_cv_MEMCACHED_LIBS
+        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+
+fi
+
 # Checks for header files.
 
 ac_ext=c
@@ -4437,6 +4536,14 @@ ac_fn_c_check_header_mongrel "$LINENO" "openssl/crypto.h" "ac_cv_header_openssl_
 if test "x$ac_cv_header_openssl_crypto_h" = xyes; then :
 
 $as_echo "#define HAVE_OPENSSL /**/" >>confdefs.h
+
+fi
+
+
+ac_fn_c_check_header_mongrel "$LINENO" "libmemcached/memcached.h" "ac_cv_header_libmemcached_memcached_h" "$ac_includes_default"
+if test "x$ac_cv_header_libmemcached_memcached_h" = xyes; then :
+
+$as_echo "#define HAVE_MEMCACHED /**/" >>confdefs.h
 
 fi
 

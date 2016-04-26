@@ -43,6 +43,9 @@
    to 0 otherwise. */
 #undef HAVE_MALLOC
 
+/* Memcached found */
+#undef HAVE_MEMCACHED
+
 /* Define to 1 if you have the `memmove' function. */
 #undef HAVE_MEMMOVE
 
