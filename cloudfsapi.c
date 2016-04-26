@@ -308,7 +308,7 @@ static int send_request(char *method, const char *path, FILE *fp,
     curl_slist_free_all(headers);
     curl_easy_reset(curl);
     return_connection(curl);
-    if (response >= 200 && response < 400 || response == 416)
+    if ( ( response >= 200 && response < 400 ) || response == 416 )
       return response;
     sleep(8 << tries); // backoff
     if (response == 401 && !cloudfs_connect()) // re-authenticate on 401s
