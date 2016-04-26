@@ -20,6 +20,10 @@
 #include "cloudfsapi.h"
 #include "config.h"
 
+#ifdef HAVE_MEMCACHED
+#include <libmemcached/memcached.h>
+#endif
+
 #define RHEL5_LIBCURL_VERSION 462597
 #define RHEL5_CERTIFICATE_FILE "/etc/pki/tls/certs/ca-bundle.crt"
 
@@ -187,12 +191,29 @@ static size_t header_dispatch(void *ptr, size_t size, size_t nmemb, void *stream
       strncpy(storage_url, value, sizeof(storage_url));
     if (!strncasecmp(head, "x-account-bytes-used", size * nmemb))
       strncpy(storage_space_used, value, sizeof(storage_space_used));
+    if(!strncasecmp(head, "Content-Length", size * nmemb) && stream != NULL)
+      ((struct stat*) stream)->st_size = strtol(value, NULL, 10);
   }
   return size * nmemb;
 }
 
+static size_t buffer_dispatch(void *ptr, size_t size, size_t nmemb, void *userdata)
+{
+  size_t realsize = size * nmemb;
+  struct memory_struct *buf = (struct memory_struct *) userdata;
+
+  buf->memory = realloc(buf->memory, buf->size + realsize);
+  if(buf->memory == NULL) {
+    return 0;
+  }
+  memcpy(&(buf->memory[buf->size-1]), ptr, realsize);
+  buf->size += realsize;
+  return realsize;
+}
+
 static int send_request(char *method, const char *path, FILE *fp,
-                        xmlParserCtxtPtr xmlctx, curl_slist *extra_headers)
+                        xmlParserCtxtPtr xmlctx, curl_slist *extra_headers,
+			int write_to_buffer)
 {
   char url[MAX_URL_SIZE];
   char *slash;
@@ -239,14 +260,14 @@ static int send_request(char *method, const char *path, FILE *fp,
     }
     else if (!strcasecmp(method, "PUT") && fp)
     {
-      rewind(fp);
+      /* rewind(fp);
       curl_easy_setopt(curl, CURLOPT_UPLOAD, 1);
-      curl_easy_setopt(curl, CURLOPT_INFILESIZE, cloudfs_file_size(fileno(fp)));
-      curl_easy_setopt(curl, CURLOPT_READDATA, fp);
+      curl_easy_setopt(curl, CURLOPT_INFILESIZE, cloudfs_file_size(fp));
+      curl_easy_setopt(curl, CURLOPT_READDATA, fp); */
     }
     else if (!strcasecmp(method, "GET"))
     {
-      if (fp)
+      if (fp && !write_to_buffer)
       {
         rewind(fp); // make sure the file is ready for a-writin'
         fflush(fp);
@@ -261,12 +282,16 @@ static int send_request(char *method, const char *path, FILE *fp,
       {
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, xmlctx);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &xml_dispatch);
+      } else if (write_to_buffer) {
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &buffer_dispatch);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
       }
     }
     else if (!strcasecmp(method, "HEAD"))
     {
       curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
       curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, &header_dispatch);
+      curl_easy_setopt(curl, CURLOPT_HEADERDATA, fp);
     }
     else
       curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
@@ -283,7 +308,7 @@ static int send_request(char *method, const char *path, FILE *fp,
     curl_slist_free_all(headers);
     curl_easy_reset(curl);
     return_connection(curl);
-    if (response >= 200 && response < 400)
+    if (response >= 200 && response < 400 || response == 416)
       return response;
     sleep(8 << tries); // backoff
     if (response == 401 && !cloudfs_connect()) // re-authenticate on 401s
@@ -334,7 +359,7 @@ void cloudfs_init()
 
 int cloudfs_tenant_info(struct statvfs *stat)
 {
-  int response = send_request("HEAD", "", NULL, NULL, NULL);
+  int response = send_request("HEAD", "", NULL, NULL, NULL, 0);
   if (response == 204)
   {
     fsblkcnt_t space_used = atol(storage_space_used) / stat->f_frsize;
@@ -348,21 +373,64 @@ int cloudfs_object_read_fp(const char *path, FILE *fp)
 {
   fflush(fp);
   rewind(fp);
-  char *encoded = curl_escape(path, 0);
-  int response = send_request("PUT", encoded, fp, NULL, NULL);
+  char *encoded = curl_easy_escape(get_connection(path), path, 0);
+  int response = send_request("PUT", encoded, fp, NULL, NULL, 0);
   curl_free(encoded);
   return (response >= 200 && response < 300);
 }
 
-int cloudfs_object_write_fp(const char *path, FILE *fp)
+
+int cloudfs_object_write_buf(const char *path, void *buf, size_t size, off_t offset)
 {
-  char *encoded = curl_escape(path, 0);
-  int response = send_request("GET", encoded, fp, NULL, NULL);
+  // interpret buf as memory_struct (this is used multiple times, and I don't want to cast each time)
+  struct memory_struct *mem = buf;
+  char *encoded = curl_easy_escape(get_connection(path), path, 0);
+  struct curl_slist *headers=NULL;
+  char range_header[MAX_HEADER_SIZE];
+  sprintf(range_header, "Range: bytes=%lu-%lu", offset, offset+size-1);
+#ifdef HAVE_MEMCACHED
+  char *mc_cfg = "--SERVER=localhost:11211";
+  memcached_st *memc = memcached(mc_cfg, strlen(mc_cfg));
+  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
+  size_t keylen = strlen(encoded) + strlen(range_header) + 1;
+  char *key = alloca(keylen);
+  key[0] = '\0';
+  strcat(key, encoded);
+  strcat(key, range_header);
+  size_t value_length;
+  uint32_t flags;
+  memcached_return_t error;
+  // query memcached and return (remember curl_free below and memcached_free)
+  mem->memory = memcached_get(memc, key, keylen, &value_length, &flags, &error);
+  if(mem->memory != NULL) {
+    curl_free(encoded);
+    memcached_free(memc);
+    return value_length;
+  } else {
+    debugf("No value for key: %s\n", key);
+  }
+
+#endif
+  headers = curl_slist_append(headers, range_header);
+  int response = send_request("GET", encoded, buf, NULL, headers, 1);
+  if(response == 416) { // 416 Requested Range Not Satisfiable
+    return 0;
+  }
   curl_free(encoded);
-  fflush(fp);
-  if ((response >= 200 && response < 300) || ftruncate(fileno(fp), 0))
-    return 1;
-  rewind(fp);
+  if ((response >= 200 && response < 300 && mem->size > 0)) {
+#ifdef HAVE_MEMCACHED
+	// cache in memcached
+    time_t expiry = time(NULL);
+    expiry += 36000;
+    debugf("Writing %d bytes to cache as %s with expiry %d\n", mem->size - 1, key, expiry);
+    memcached_return_t mc_ret = memcached_add(memc, key, keylen, mem->memory, mem->size - 1, expiry, 0);
+    if(mc_ret != MEMCACHED_SUCCESS) {
+      printf("Unable to cache object: %s\n", memcached_strerror(memc, mc_ret));
+    }
+    memcached_free(memc);
+#endif
+    return mem->size - 1;
+  }
   return 0;
 }
 
@@ -373,12 +441,12 @@ int cloudfs_object_truncate(const char *path, off_t size)
   if (size == 0)
   {
     FILE *fp = fopen("/dev/null", "r");
-    response = send_request("PUT", encoded, fp, NULL, NULL);
+    response = send_request("PUT", encoded, fp, NULL, NULL, 0);
     fclose(fp);
   }
   else
   {//TODO: this is busted
-    response = send_request("GET", encoded, NULL, NULL, NULL);
+    response = send_request("GET", encoded, NULL, NULL, NULL, 0);
   }
   curl_free(encoded);
   return (response >= 200 && response < 300);
@@ -425,7 +493,7 @@ int cloudfs_list_directory(const char *path, dir_entry **dir_list)
     curl_free(encoded_object);
   }
 
-  response = send_request("GET", container, NULL, xmlctx, NULL);
+  response = send_request("GET", container, NULL, xmlctx, NULL, 0);
   xmlParseChunk(xmlctx, "", 0, 1);
   if (xmlctx->wellFormed && response >= 200 && response < 300)
   {
@@ -493,6 +561,8 @@ int cloudfs_list_directory(const char *path, dir_entry **dir_list)
             continue;
           }
           strncpy(last_subdir, de->name, sizeof(last_subdir));
+        } else {
+        	de->size = de->size ? de->size : cloudfs_file_size(de->full_name);
         }
         de->next = *dir_list;
         *dir_list = de;
@@ -528,7 +598,7 @@ void cloudfs_free_dir_list(dir_entry *dir_list)
 int cloudfs_delete_object(const char *path)
 {
   char *encoded = curl_escape(path, 0);
-  int response = send_request("DELETE", encoded, NULL, NULL, NULL);
+  int response = send_request("DELETE", encoded, NULL, NULL, NULL, 0);
   curl_free(encoded);
   return (response >= 200 && response < 300);
 }
@@ -539,7 +609,7 @@ int cloudfs_copy_object(const char *src, const char *dst)
   curl_slist *headers = NULL;
   add_header(&headers, "X-Copy-From", src);
   add_header(&headers, "Content-Length", "0");
-  int response = send_request("PUT", dst_encoded, NULL, NULL, headers);
+  int response = send_request("PUT", dst_encoded, NULL, NULL, headers, 0);
   curl_free(dst_encoded);
   curl_slist_free_all(headers);
   return (response >= 200 && response < 300);
@@ -548,15 +618,15 @@ int cloudfs_copy_object(const char *src, const char *dst)
 int cloudfs_create_directory(const char *path)
 {
   char *encoded = curl_escape(path, 0);
-  int response = send_request("MKDIR", encoded, NULL, NULL, NULL);
+  int response = send_request("MKDIR", encoded, NULL, NULL, NULL, 0);
   curl_free(encoded);
   return (response >= 200 && response < 300);
 }
 
-off_t cloudfs_file_size(int fd)
+off_t cloudfs_file_size(char *path)
 {
   struct stat buf;
-  fstat(fd, &buf);
+  send_request("HEAD", path, (FILE*) &buf, NULL, NULL, 0);
   return buf.st_size;
 }
 

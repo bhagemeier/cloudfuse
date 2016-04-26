@@ -32,13 +32,6 @@ typedef struct dir_cache
 static dir_cache *dcache;
 static pthread_mutex_t dmut;
 
-typedef struct
-{
-  int fd;
-  int flags;
-} openfile;
-
-
 static void dir_for(const char *path, char *dir)
 {
   strncpy(dir, path, MAX_PATH_SIZE);
@@ -223,7 +216,7 @@ static int cfs_fgetattr(const char *path, struct stat *stbuf, struct fuse_file_i
   openfile *of = (openfile *)(uintptr_t)info->fh;
   if (of)
   {
-    stbuf->st_size = cloudfs_file_size(of->fd);
+    stbuf->st_size = cloudfs_file_size(of->path);
     stbuf->st_mode = S_IFREG | 0666;
     stbuf->st_nlink = 1;
     return 0;
@@ -268,21 +261,24 @@ static int cfs_create(const char *path, mode_t mode, struct fuse_file_info *info
 
 static int cfs_open(const char *path, struct fuse_file_info *info)
 {
-  FILE *temp_file = tmpfile();
+  //  FILE *temp_file = tmpfile();
   dir_entry *de = path_info(path);
   if (!(info->flags & O_WRONLY))
   {
-    if (!cloudfs_object_write_fp(path, temp_file))
+    /* reading the entire file does not make sense for our use case
+       we can only start reading when a certain range is requested */
+    /*if (!cloudfs_object_write_fp(path, temp_file))
     {
       fclose(temp_file);
       return -ENOENT;
-    }
+      }*/
     update_dir_cache(path, (de ? de->size : 0), 0);
   }
   openfile *of = (openfile *)malloc(sizeof(openfile));
-  of->fd = dup(fileno(temp_file));
-  fclose(temp_file);
+  //  of->fd = dup(fileno(temp_file));
+  //  fclose(temp_file);
   of->flags = info->flags;
+  strcpy(of->path, path);
   info->fh = (uintptr_t)of;
   info->direct_io = 1;
   return 0;
@@ -290,7 +286,17 @@ static int cfs_open(const char *path, struct fuse_file_info *info)
 
 static int cfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
 {
-  return pread(((openfile *)(uintptr_t)info->fh)->fd, buf, size, offset);
+  struct memory_struct memory;
+  memory.memory = malloc(1);
+  memory.size = 1;
+  size_t realsize = cloudfs_object_write_buf(path, &memory, size, offset);
+  if(realsize > size) {
+    return EOF;
+  } else {
+    memcpy(buf, memory.memory, realsize);
+  }
+  free(memory.memory);
+  return realsize;
 }
 
 static int cfs_flush(const char *path, struct fuse_file_info *info)
@@ -298,7 +304,7 @@ static int cfs_flush(const char *path, struct fuse_file_info *info)
   openfile *of = (openfile *)(uintptr_t)info->fh;
   if (of)
   {
-    update_dir_cache(path, cloudfs_file_size(of->fd), 0);
+    update_dir_cache(path, cloudfs_file_size(of->path), 0);
     if (of->flags & O_RDWR || of->flags & O_WRONLY)
     {
       FILE *fp = fdopen(dup(of->fd), "r");

@@ -12,6 +12,11 @@
 
 typedef struct curl_slist curl_slist;
 
+struct memory_struct {
+  char *memory;
+  size_t size;
+};
+
 typedef struct dir_entry
 {
   char *name;
@@ -23,19 +28,27 @@ typedef struct dir_entry
   struct dir_entry *next;
 } dir_entry;
 
+typedef struct
+{
+  int fd;
+  int flags;
+  char path[MAX_PATH_SIZE];
+  off_t size;
+} openfile;
+
 void cloudfs_init();
 void cloudfs_set_credentials(char *username, char *tenant, char *password,
                              char *authurl, char *region, int use_snet);
 int cloufds_connect();
 int cloudfs_tenant_info(struct statvfs *stat);
 int cloudfs_object_read_fp(const char *path, FILE *fp);
-int cloudfs_object_write_fp(const char *path, FILE *fp);
+int cloudfs_object_write_buf(const char *path, void *buf, size_t size, off_t offset);
 int cloudfs_list_directory(const char *path, dir_entry **);
 int cloudfs_delete_object(const char *path);
 int cloudfs_copy_object(const char *src, const char *dst);
 int cloudfs_create_directory(const char *label);
 int cloudfs_object_truncate(const char *path, off_t size);
-off_t cloudfs_file_size(int fd);
+off_t cloudfs_file_size(char *path);
 void cloudfs_debug(int dbg);
 void cloudfs_verify_ssl(int dbg);
 void cloudfs_free_dir_list(dir_entry *dir_list);
