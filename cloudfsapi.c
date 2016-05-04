@@ -150,7 +150,7 @@ static size_t json_dispatch(void *ptr, size_t size, size_t nmemb, void *stream)
   return len;
 }
 
-static CURL *get_connection(const char *path)
+static CURL *get_connection()
 {
   pthread_mutex_lock(&pool_mut);
   CURL *curl = curl_pool_count ? curl_pool[--curl_pool_count] : curl_easy_init();
@@ -241,7 +241,7 @@ static int send_request(char *method, const char *path, FILE *fp,
   // retry on failures
   for (tries = 0; tries < REQUEST_RETRIES; tries++)
   {
-    CURL *curl = get_connection(path);
+    CURL *curl = get_connection();
     if (rhel5_mode)
       curl_easy_setopt(curl, CURLOPT_CAINFO, RHEL5_CERTIFICATE_FILE);
     curl_slist *headers = NULL;
@@ -376,7 +376,9 @@ int cloudfs_object_read_fp(const char *path, FILE *fp)
 {
   fflush(fp);
   rewind(fp);
-  char *encoded = curl_easy_escape(get_connection(path), path, 0);
+  CURL *curl = get_connection();
+  char *encoded = curl_easy_escape(curl, path, 0);
+  return_connection(curl);
   int response = send_request("PUT", encoded, fp, NULL, NULL, 0);
   curl_free(encoded);
   return (response >= 200 && response < 300);
@@ -389,7 +391,9 @@ size_t cloudfs_cache_block(const char *path, size_t block_num, char *range_heade
   struct memory_struct memory;
   memory.memory = malloc(1);
   memory.size = 1;
-  char *encoded = curl_easy_escape(get_connection(path), path, 0);
+  CURL *curl = get_connection();
+  char *encoded = curl_easy_escape(curl, path, 0);
+  return_connection(curl);
   int response = send_request("GET", encoded, (void*) &memory, NULL, headers, 1);
   size_t result = 0;
   if(response == 416) { // 416 Requested Range Not Satisfiable
@@ -400,6 +404,7 @@ size_t cloudfs_cache_block(const char *path, size_t block_num, char *range_heade
     time_t expiry = time(NULL);
     expiry += 864000;
     debugf("Writing %d bytes to cache as %s with expiry %d\n", memory.size - 1, key, expiry);
+
     memcached_return_t mc_ret = memcached_add(memc, key, strlen(key), memory.memory, memory.size - 1, expiry, 0);
     memcpy(buf, memory.memory, memory.size - 1);
     if(mc_ret != MEMCACHED_SUCCESS) {
