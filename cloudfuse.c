@@ -289,10 +289,7 @@ static int cfs_read(const char *path, char *buf, size_t size, off_t offset, stru
   size_t realsize = cloudfs_object_write_buf(path, buf, size, offset);
   if(realsize > size) {
     return EOF;
-  } else {
-    memcpy(buf, memory.memory, realsize);
   }
-  free(memory.memory);
   return realsize;
 }
 
