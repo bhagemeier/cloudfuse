@@ -3,6 +3,7 @@
 
 #include <curl/curl.h>
 #include <curl/easy.h>
+#include <libmemcached/memcached.h>
 
 #define BUFFER_INITIAL_SIZE 4096
 #define MAX_HEADER_SIZE 8192
@@ -42,6 +43,8 @@ void cloudfs_set_credentials(char *username, char *tenant, char *password,
 int cloufds_connect();
 int cloudfs_tenant_info(struct statvfs *stat);
 int cloudfs_object_read_fp(const char *path, FILE *fp);
+size_t cloudfs_cache_block(const char *encoded_path, size_t block_num, char *range_header, char *key, char *buf, memcached_st *memc);
+size_t cloudfs_object_get_block(const char *encoded_path, char *tgt, size_t block_num, off_t offset, size_t bytes);
 int cloudfs_object_write_buf(const char *path, void *buf, size_t size, off_t offset);
 int cloudfs_list_directory(const char *path, dir_entry **);
 int cloudfs_delete_object(const char *path);

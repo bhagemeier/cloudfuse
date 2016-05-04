@@ -19,6 +19,7 @@
 #include <json-c/json.h>
 #include "cloudfsapi.h"
 #include "config.h"
+#include "sys/param.h"
 
 #ifdef HAVE_MEMCACHED
 #include <libmemcached/memcached.h>
@@ -28,6 +29,8 @@
 #define RHEL5_CERTIFICATE_FILE "/etc/pki/tls/certs/ca-bundle.crt"
 
 #define REQUEST_RETRIES 4
+
+#define CACHE_BLOCK_SIZE  524288
 
 static char storage_url[MAX_URL_SIZE];
 static char storage_token[MAX_HEADER_SIZE];
@@ -283,8 +286,8 @@ static int send_request(char *method, const char *path, FILE *fp,
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, xmlctx);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &xml_dispatch);
       } else if (write_to_buffer) {
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &buffer_dispatch);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &buffer_dispatch);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
       }
     }
     else if (!strcasecmp(method, "HEAD"))
@@ -379,59 +382,115 @@ int cloudfs_object_read_fp(const char *path, FILE *fp)
   return (response >= 200 && response < 300);
 }
 
-
-int cloudfs_object_write_buf(const char *path, void *buf, size_t size, off_t offset)
-{
-  // interpret buf as memory_struct (this is used multiple times, and I don't want to cast each time)
-  struct memory_struct *mem = buf;
+size_t cloudfs_cache_block(const char *path, size_t block_num, char *range_header, char *key, char *buf, memcached_st *memc) {
+  char *mc_cfg = "--SERVER=localhost:11211";
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, range_header);
+  struct memory_struct memory;
+  memory.memory = malloc(1);
+  memory.size = 1;
   char *encoded = curl_easy_escape(get_connection(path), path, 0);
-  struct curl_slist *headers=NULL;
+  int response = send_request("GET", encoded, (void*) &memory, NULL, headers, 1);
+  size_t result = 0;
+  if(response == 416) { // 416 Requested Range Not Satisfiable
+    // consider storing an empty block in memcached to signal EOF
+    result = 0;
+  } else if (response >= 200 && response < 300 && memory.size > 0) {
+    // cache in memcached
+    time_t expiry = time(NULL);
+    expiry += 864000;
+    debugf("Writing %d bytes to cache as %s with expiry %d\n", memory.size - 1, key, expiry);
+    memcached_return_t mc_ret = memcached_add(memc, key, strlen(key), memory.memory, memory.size - 1, expiry, 0);
+    memcpy(buf, memory.memory, memory.size - 1);
+    if(mc_ret != MEMCACHED_SUCCESS) {
+      printf("Unable to cache object: %s\n", memcached_strerror(memc, mc_ret));
+    }
+    result = memory.size - 1;
+  }
+  curl_free(encoded);
+  free(memory.memory);
+  curl_slist_free_all(headers);
+  return result;
+
+
+}
+
+/**
+ * will copy bytes bytes of block starting at offset to tgt
+ * if tgt is part of a larger buffer buf, then tgt must point to the offset within this buffer.
+ * offset is the offset within the block
+ */
+size_t cloudfs_object_get_block(const char *path, char *tgt, size_t block_num, off_t offset, size_t bytes) {
+
   char range_header[MAX_HEADER_SIZE];
-  sprintf(range_header, "Range: bytes=%lu-%lu", offset, offset+size-1);
-#ifdef HAVE_MEMCACHED
+  sprintf(range_header, "Range: bytes=%lu-%lu", block_num * CACHE_BLOCK_SIZE, (block_num + 1) * CACHE_BLOCK_SIZE - 1);
   char *mc_cfg = "--SERVER=localhost:11211";
   memcached_st *memc = memcached(mc_cfg, strlen(mc_cfg));
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
-  size_t keylen = strlen(encoded) + strlen(range_header) + 1;
-  char *key = alloca(keylen);
+  size_t keylen = strlen(path) + strlen(range_header);
+  char *key = alloca(keylen + 1); // for final 0
   key[0] = '\0';
-  strcat(key, encoded);
+  strcat(key, path);
   strcat(key, range_header);
   size_t value_length;
   uint32_t flags;
   memcached_return_t error;
   // query memcached and return (remember curl_free below and memcached_free)
-  mem->memory = memcached_get(memc, key, keylen, &value_length, &flags, &error);
-  if(mem->memory != NULL) {
-    curl_free(encoded);
-    memcached_free(memc);
-    return value_length;
-  } else {
-    debugf("No value for key: %s\n", key);
+  char *mc_buf = memcached_get(memc, key, keylen, &value_length, &flags, &error);
+  size_t bytes_read;
+  size_t result = 0;
+  if(mc_buf != NULL) {
+    debugf("Block found for %s. Length: %lu bytes.\n", key, value_length);
+    if(offset < value_length) {
+      memcpy(tgt, (mc_buf + offset), MIN(bytes, value_length - offset));
+      result = MIN(bytes, value_length - offset);
+    } else {
+      result = 0;
+    }
+  } else { // mc_buf == NULL
+    debugf("No entry found for %s: %s\n", key, memcached_strerror(memc, error));
+    mc_buf = malloc(CACHE_BLOCK_SIZE);
+    bytes_read = cloudfs_cache_block(path, block_num, range_header, key, mc_buf, memc);
+    if(bytes_read <= offset) {
+      result = 0;
+    } else {
+      memcpy(tgt, (mc_buf + offset), MIN(bytes, bytes_read));
+      result = MIN(bytes, bytes_read);
+    }
   }
 
-#endif
-  headers = curl_slist_append(headers, range_header);
-  int response = send_request("GET", encoded, buf, NULL, headers, 1);
-  if(response == 416) { // 416 Requested Range Not Satisfiable
-    return 0;
-  }
-  curl_free(encoded);
-  if ((response >= 200 && response < 300 && mem->size > 0)) {
-#ifdef HAVE_MEMCACHED
-	// cache in memcached
-    time_t expiry = time(NULL);
-    expiry += 36000;
-    debugf("Writing %d bytes to cache as %s with expiry %d\n", mem->size - 1, key, expiry);
-    memcached_return_t mc_ret = memcached_add(memc, key, keylen, mem->memory, mem->size - 1, expiry, 0);
-    if(mc_ret != MEMCACHED_SUCCESS) {
-      printf("Unable to cache object: %s\n", memcached_strerror(memc, mc_ret));
+  free(mc_buf);
+  memcached_free(memc);
+  return result;
+
+}
+
+
+int cloudfs_object_write_buf(const char *path, void *buf, size_t size, off_t offset)
+{
+  // interpret buf as memory_struct (this is used multiple times, and I don't want to cast each time)
+  char *cbuf = buf;
+  size_t first_block = offset / CACHE_BLOCK_SIZE;
+  size_t remaining_size = size;
+  size_t last_block  = ( offset + size - 1 ) / CACHE_BLOCK_SIZE;
+
+  size_t block_offset = offset - (first_block * CACHE_BLOCK_SIZE); // relative offset in first block
+  size_t i;
+  size_t result = 0;
+  for(i = first_block; i <= last_block; i++) {
+    size_t read = cloudfs_object_get_block(path, cbuf + (size - remaining_size), i, block_offset, MIN(remaining_size, CACHE_BLOCK_SIZE - block_offset));
+    if(read == 0) {
+      break;
     }
-    memcached_free(memc);
-#endif
-    return mem->size - 1;
+    remaining_size -= read;
+    block_offset = 0; // read subsequent blocks from the beginning
+    result = size - remaining_size;
+    if(read < size) {
+      break;
+    }
   }
-  return 0;
+
+  return result;
 }
 
 int cloudfs_object_truncate(const char *path, off_t size)

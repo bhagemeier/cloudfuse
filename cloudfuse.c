@@ -286,10 +286,7 @@ static int cfs_open(const char *path, struct fuse_file_info *info)
 
 static int cfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
 {
-  struct memory_struct memory;
-  memory.memory = malloc(1);
-  memory.size = 1;
-  size_t realsize = cloudfs_object_write_buf(path, &memory, size, offset);
+  size_t realsize = cloudfs_object_write_buf(path, buf, size, offset);
   if(realsize > size) {
     return EOF;
   } else {
