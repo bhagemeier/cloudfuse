@@ -458,7 +458,7 @@ int parse_option(void *data, const char *arg, int key, struct fuse_args *outargs
       sscanf(arg, " use_snet = %[^\r\n ]", options.use_snet) ||
       sscanf(arg, " verify_ssl = %[^\r\n ]", options.verify_ssl))
     return 0;
-  if (!strcmp(arg, "-f") || !strcmp(arg, "-d") || !strcmp(arg, "debug"))
+  if (!strcmp(arg, "-d") || !strcmp(arg, "debug"))
     cloudfs_debug(1);
   return 1;
 }
