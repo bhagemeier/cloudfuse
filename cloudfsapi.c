@@ -35,6 +35,9 @@
 static char storage_url[MAX_URL_SIZE];
 static char storage_token[MAX_HEADER_SIZE];
 static char storage_space_used[32];
+static pthread_mutex_t mc_pool_mut;
+static memcached_st *mc_pool[1024];
+static int mc_pool_count = 0;
 static pthread_mutex_t pool_mut;
 static CURL *curl_pool[1024];
 static int curl_pool_count = 0;
@@ -148,6 +151,34 @@ static size_t json_dispatch(void *ptr, size_t size, size_t nmemb, void *stream)
   payload->size += len;
   payload->data[payload->size] = '\0';
   return len;
+}
+
+static memcached_st *init_mc_conn()
+{
+  char *mc_cfg = "--SERVER=localhost:11211";
+  memcached_st *memc = memcached(mc_cfg, strlen(mc_cfg));
+  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
+  return memc;
+}
+
+static memcached_st *get_mc_connection()
+{
+  pthread_mutex_lock(&mc_pool_mut);
+  memcached_st *mc = mc_pool_count ? mc_pool[--mc_pool_count] : init_mc_conn();
+  if(!mc) {
+    debugf("memcached allocation failed");
+    abort();
+  }
+
+  pthread_mutex_unlock(&mc_pool_mut);
+  return mc;
+}
+
+static void return_mc_connection(memcached_st *mc)
+{
+  pthread_mutex_lock(&mc_pool_mut);
+  mc_pool[mc_pool_count++] = mc;
+  pthread_mutex_unlock(&mc_pool_mut);
 }
 
 static CURL *get_connection()
@@ -429,9 +460,7 @@ size_t cloudfs_object_get_block(const char *path, char *tgt, size_t block_num, o
 
   char range_header[MAX_HEADER_SIZE];
   sprintf(range_header, "Range: bytes=%lu-%lu", block_num * CACHE_BLOCK_SIZE, (block_num + 1) * CACHE_BLOCK_SIZE - 1);
-  char *mc_cfg = "--SERVER=localhost:11211";
-  memcached_st *memc = memcached(mc_cfg, strlen(mc_cfg));
-  memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
+  memcached_st *memc = get_mc_connection();
   size_t keylen = strlen(path) + strlen(range_header);
   char *key = alloca(keylen + 1); // for final 0
   key[0] = '\0';
@@ -465,7 +494,7 @@ size_t cloudfs_object_get_block(const char *path, char *tgt, size_t block_num, o
   }
 
   free(mc_buf);
-  memcached_free(memc);
+  return_mc_connection(memc);
   return result;
 
 }
