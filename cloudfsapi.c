@@ -363,6 +363,7 @@ void cloudfs_init()
   xmlXPathInit();
   curl_global_init(CURL_GLOBAL_ALL);
   pthread_mutex_init(&pool_mut, NULL);
+  pthread_mutex_init(&mc_pool_mut, NULL);
   curl_version_info_data *cvid = curl_version_info(CURLVERSION_NOW);
 
   // CentOS/RHEL 5 get stupid mode, because they have a broken libcurl
