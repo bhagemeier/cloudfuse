@@ -31,6 +31,7 @@
 #define REQUEST_RETRIES 4
 
 #define CACHE_BLOCK_SIZE  524288
+#define PENDING_QUEUE_SIZE 16
 
 static char storage_url[MAX_URL_SIZE];
 static char storage_token[MAX_HEADER_SIZE];
@@ -44,6 +45,14 @@ static int curl_pool_count = 0;
 static int debug = 0;
 static int verify_ssl = 1;
 static int rhel5_mode = 0;
+
+struct pending_request {
+  char *hash;
+  pthread_mutex_t mutex;
+};
+
+static struct pending_request* pending_requests[PENDING_QUEUE_SIZE];
+static pthread_mutex_t pending_request_mut;
 
 struct json_payload {
   char *data;
@@ -159,6 +168,51 @@ static memcached_st *init_mc_conn()
   memcached_st *memc = memcached(mc_cfg, strlen(mc_cfg));
   memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, 1);
   return memc;
+}
+
+static pthread_mutex_t* new_pending_request(char *_key) {
+//  pthread_mutex_lock(&pending_request_mut);
+  int i;
+  for(i = 0; i< PENDING_QUEUE_SIZE; ++i) {
+    if(pending_requests[i] == NULL) {
+      pending_requests[i] = malloc(sizeof(struct pending_request));
+      pending_requests[i]->hash = malloc(strlen(_key) + 1);
+      strcpy(pending_requests[i]->hash, _key);
+      pthread_mutex_init(&pending_requests[i]->mutex, NULL);
+      return &pending_requests[i]->mutex;
+    }
+  }
+//  pthread_mutex_unlock(&pending_request_mut);
+}
+
+static pthread_mutex_t* get_request_mutex(char *_key) {
+  pthread_mutex_t* mutex = NULL;
+  pthread_mutex_lock(&pending_request_mut);
+  int i;
+  for(i = 0; i < PENDING_QUEUE_SIZE; ++i) {
+    if(pending_requests[i] != NULL && strcmp(pending_requests[i]->hash, _key) == 0) {
+      mutex = &(pending_requests[i]->mutex);
+    }
+  }
+  if(mutex == NULL) {
+    mutex = new_pending_request(_key);
+  }
+  pthread_mutex_unlock(&pending_request_mut);
+  return mutex;
+}
+
+static void remove_pending_request(char *_key) {
+  pthread_mutex_lock(&pending_request_mut);
+  int i;
+  for(i = 0; i <PENDING_QUEUE_SIZE; ++i) {
+    if(pending_requests[i] != NULL && strcmp(pending_requests[i]->hash, _key) == 0) {
+      pthread_mutex_destroy(&pending_requests[i]->mutex);
+      free(pending_requests[i]->hash);
+      free(pending_requests[i]);
+      pending_requests[i] = NULL;
+    }
+  }
+  pthread_mutex_unlock(&pending_request_mut);
 }
 
 static memcached_st *get_mc_connection()
@@ -364,6 +418,7 @@ void cloudfs_init()
   curl_global_init(CURL_GLOBAL_ALL);
   pthread_mutex_init(&pool_mut, NULL);
   pthread_mutex_init(&mc_pool_mut, NULL);
+  pthread_mutex_init(&pending_request_mut, NULL);
   curl_version_info_data *cvid = curl_version_info(CURLVERSION_NOW);
 
   // CentOS/RHEL 5 get stupid mode, because they have a broken libcurl
@@ -461,16 +516,19 @@ size_t cloudfs_object_get_block(const char *path, char *tgt, size_t block_num, o
 
   char range_header[MAX_HEADER_SIZE];
   sprintf(range_header, "Range: bytes=%lu-%lu", block_num * CACHE_BLOCK_SIZE, (block_num + 1) * CACHE_BLOCK_SIZE - 1);
-  memcached_st *memc = get_mc_connection();
   size_t keylen = strlen(path) + strlen(range_header);
   char *key = alloca(keylen + 1); // for final 0
   key[0] = '\0';
   strcat(key, path);
   strcat(key, range_header);
+  pthread_mutex_t* req_mutex = get_request_mutex(key);
+  pthread_mutex_lock(req_mutex);
+  remove_pending_request(key);
   size_t value_length;
   uint32_t flags;
   memcached_return_t error;
   // query memcached and return (remember curl_free below and memcached_free)
+  memcached_st *memc = get_mc_connection();
   char *mc_buf = memcached_get(memc, key, keylen, &value_length, &flags, &error);
   size_t bytes_read;
   size_t result = 0;
